@@ -1,5 +1,6 @@
 <INSTRUCTIONS>
 Use llms/elysia-llms.txt as the primary reference for framework details and conventions.
+Use llms/supabase-llms.txt as the reference for Supabase-specific details and conventions.
 Follow the Conventional Commits format when writing commit messages.
 
 Commit format:

@@ -9,14 +9,13 @@ services:
       PORT: 3000
       WORKERS: 2
       DATABASE_URL: postgres://elysia:elysia@db:5432/elysia
-      JWT_SECRET: dev-secret-change-me-change-me-change!
       CORS_ORIGINS: "*"
-      BETTER_AUTH_SECRET: dev-secret-change-me-change-me-change!
-      AUTH_BASE_URL: http://localhost:3000
-      JWT_EXPIRATION: 15m
-      REFRESH_TOKEN_TTL_MS: 604800000
-      EMAIL_VERIFICATION: "false"
-      EMAIL_VERIFICATION_ENFORCE: "false"
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:-}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      SUPABASE_MAGIC_LINK_REDIRECT_URL: ${SUPABASE_MAGIC_LINK_REDIRECT_URL:-http://localhost:5173/auth}
+      SUPABASE_PASSWORD_RESET_REDIRECT_URL: ${SUPABASE_PASSWORD_RESET_REDIRECT_URL:-http://localhost:5173/auth/forget}
       DOCS_BASIC_AUTH: ""
       LOG_LEVEL: info
       RESEND_API_KEY: ${RESEND_API_KEY:-}

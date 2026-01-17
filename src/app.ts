@@ -11,6 +11,7 @@ import { authRouter } from "./routes/auth.routes";
 import { emailRouter } from "./routes/email.routes";
 import { systemRouter } from "./routes/system.routes";
 import { runCleanup } from "./services/cleanup";
+import { pingSupabase } from "./services/keepalive";
 import { docsGuard } from "./utils/docs-guard";
 import { securityHeaders } from "./utils/security";
 
@@ -19,8 +20,6 @@ const {
 	rateLimitMax,
 	rateLimitWindowMs,
 	logLevel,
-	signupRateLimitMax,
-	signupRateLimitWindowMs,
 } = appConfig;
 
 if (appConfig.nodeEnv === "production" && corsOrigins.includes("*")) {
@@ -28,7 +27,7 @@ if (appConfig.nodeEnv === "production" && corsOrigins.includes("*")) {
 }
 
 export const createApp = () => {
-	const app = new Elysia({ name: "elysia-better-auth-tempate" })
+	const app = new Elysia({ name: "elysia-supabase-template" })
 		.use(
 			openapi({
 				path: "/docs",
@@ -76,11 +75,29 @@ export const createApp = () => {
 					try {
 						const result = await runCleanup();
 						appLogger.log(
-							`cleanup done: refreshTokens=${result.refreshTokensDeleted}, sessions=${result.sessionsDeleted}, verifications=${result.verificationsDeleted}, rateLimits=${result.rateLimitsDeleted}`,
+							`cleanup done: rateLimits=${result.rateLimitsDeleted}`,
 							"Cleanup",
 						);
 					} catch (err) {
 						appLogger.error(`cleanup failed: ${err}`, "Cleanup");
+					}
+				},
+			}),
+		)
+		.use(
+			cron({
+				name: "supabase-keepalive",
+				// Every 10 minutes.
+				pattern: "0 */10 * * * *",
+				run: async () => {
+					try {
+						await pingSupabase();
+						appLogger.log("supabase keepalive ping ok", "Keepalive");
+					} catch (err) {
+						appLogger.error(
+							`supabase keepalive ping failed: ${err}`,
+							"Keepalive",
+						);
 					}
 				},
 			}),

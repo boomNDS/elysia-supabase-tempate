@@ -1,4 +1,6 @@
+import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
+import { createClient } from "@supabase/supabase-js";
 
 const prisma = new PrismaClient();
 
@@ -10,29 +12,52 @@ const DEFAULT_USER = {
 };
 
 const seed = async () => {
-	const hashed = await Bun.password.hash(DEFAULT_USER.password, {
-		algorithm: "bcrypt",
-		cost: 10,
+	const supabaseUrl = process.env.SUPABASE_URL;
+	const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+	if (!supabaseUrl || !serviceRoleKey) {
+		console.warn("Skipping seed: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY missing.");
+		return;
+	}
+
+	const supabase = createClient(supabaseUrl, serviceRoleKey, {
+		auth: { persistSession: false, autoRefreshToken: false },
 	});
 
-	const user = await prisma.user.upsert({
-		where: { email: DEFAULT_USER.email },
+	const existing = await supabase.auth.admin.getUserByEmail(DEFAULT_USER.email);
+	if (existing.error) {
+		throw new Error(existing.error.message);
+	}
+	const userId =
+		existing.data.user?.id ??
+		(
+			await supabase.auth.admin.createUser({
+				email: DEFAULT_USER.email,
+				password: DEFAULT_USER.password,
+				email_confirm: true,
+				user_metadata: { name: DEFAULT_USER.name },
+				app_metadata: { role: DEFAULT_USER.role },
+			})
+		).data.user?.id;
+
+	if (!userId) {
+		throw new Error("Unable to seed Supabase auth user.");
+	}
+
+	const profile = await prisma.profile.upsert({
+		where: { id: userId },
 		update: {
-			password: hashed,
 			name: DEFAULT_USER.name,
-			emailVerified: true,
 			role: DEFAULT_USER.role,
 		},
 		create: {
-			email: DEFAULT_USER.email,
-			password: hashed,
+			id: userId,
 			name: DEFAULT_USER.name,
-			emailVerified: true,
 			role: DEFAULT_USER.role,
 		},
 	});
 
-	console.log(`Seeded user ${user.email} (id=${user.id})`);
+	console.log(`Seeded profile ${profile.id} (${DEFAULT_USER.email})`);
 };
 
 seed()

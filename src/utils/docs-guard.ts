@@ -2,7 +2,9 @@ import { Elysia } from "elysia";
 
 import { appConfig } from "../config";
 import { appLogger } from "../lib/logger";
-import { authService } from "../services/auth";
+import { prisma } from "../lib/prisma";
+import { supabaseAdmin } from "../lib/supabase";
+import { getAccessToken } from "./auth";
 
 export const docsGuard = () => {
 	if (appConfig.nodeEnv !== "production") return new Elysia();
@@ -13,31 +15,30 @@ export const docsGuard = () => {
 	return new Elysia().derive(async ({ request }) => {
 		if (!request.url.includes("/docs")) return {};
 
-		const session = await authService.api.getSession({
-			headers: request.headers,
+		const accessToken = getAccessToken(request);
+		if (!accessToken) throw new Response("Unauthorized", { status: 401 });
+
+		const { data, error } = await supabaseAdmin.auth.getUser(accessToken);
+		if (error || !data.user) throw new Response("Unauthorized", { status: 401 });
+
+		const profile = await prisma.profile.findUnique({
+			where: { id: data.user.id },
 		});
 
-		if (!session) throw new Response("Unauthorized", { status: 401 });
-
-		const roles: string[] = (() => {
-			const candidate =
-				(session as any).user?.roles ?? (session as any).user?.role;
-			if (!candidate) return [];
-			return Array.isArray(candidate) ? candidate : [candidate];
-		})();
-
-		const hasRole = roles.includes(adminRole);
+		const hasRole = profile?.role === adminRole;
 		const isAllowlisted =
-			allowlist.length === 0 ? false : allowlist.includes(session.user.email);
+			allowlist.length === 0
+				? false
+				: allowlist.includes(data.user.email ?? "");
 
 		if (!hasRole && !isAllowlisted) {
 			appLogger.warn(
-				`Docs access denied for ${session.user.email}`,
+				`Docs access denied for ${data.user.email ?? "unknown"}`,
 				"DocsGuard",
 			);
 			throw new Response("Forbidden", { status: 403 });
 		}
 
-		return { session };
+		return { session: { user: data.user, profile, accessToken } };
 	});
 };

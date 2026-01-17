@@ -16,20 +16,15 @@ export const adminRouter = new Elysia({ name: "adminRoutes" })
 				"/admin/users",
 				async (ctx) => {
 					const { session } = ctx as typeof ctx & { session: AuthSession };
-					const users = await prisma.user.findMany({
-						include: {
-							accounts: true,
-							sessions: true,
-							refreshTokens: true,
-						},
+					const profiles = await prisma.profile.findMany({
 						orderBy: { createdAt: "desc" },
 					});
 
-					return { users, viewer: session.user };
+					return { profiles, viewer: session.user };
 				},
 				{
 					detail: {
-						summary: "List users from Prisma for visibility",
+						summary: "List profiles from Prisma for visibility",
 					},
 				},
 			),

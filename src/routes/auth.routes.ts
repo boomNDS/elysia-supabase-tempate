@@ -5,32 +5,50 @@ import { prisma } from "../lib/prisma";
 import {
 	forgotPasswordSchema,
 	loginSchema,
-	refreshSchema,
+	magicLinkSchema,
 	resetPasswordSchema,
-	revokeRefreshSchema,
 	signupSchema,
 } from "../schemas/auth";
-import { authService } from "../services/auth";
-import { sendVerificationEmailLink } from "../services/email";
 import {
-	createRefreshToken,
-	revokeAllRefreshTokens,
-	revokeRefreshToken,
-	rotateRefreshToken,
-} from "../services/refresh-tokens";
-import { signAccessToken } from "../services/tokens";
+	createSupabaseUserClient,
+	supabaseAdmin,
+	supabaseAnon,
+} from "../lib/supabase";
 import { AuthSession, requireSession } from "../utils/auth";
 import {
 	checkPasswordComplexity,
 	checkPwnedPassword,
 } from "../utils/passwords";
 
+const ensureProfile = async (userId: string, name: string | null | undefined) =>
+	prisma.profile.upsert({
+		where: { id: userId },
+		update: {
+			name: name ?? "User",
+		},
+		create: {
+			id: userId,
+			name: name ?? "User",
+		},
+	});
+
 export const authRouter = new Elysia({ name: "authRoutes" })
-	// Better Auth router passthrough (handles /auth/*)
-	.all("/auth/*", async ({ request }) => authService.handler(request))
 	.post(
 		"/auth/forgot-password",
-		async ({ request }) => authService.handler(request),
+		async ({ body }) => {
+			const { error } = await supabaseAnon.auth.resetPasswordForEmail(
+				body.email,
+				appConfig.passwordResetRedirectUrl
+					? { redirectTo: appConfig.passwordResetRedirectUrl }
+					: undefined,
+			);
+
+			if (error) {
+				return new Response(error.message, { status: 400 });
+			}
+
+			return { sent: true };
+		},
 		{
 			body: forgotPasswordSchema,
 			detail: {
@@ -41,7 +59,15 @@ export const authRouter = new Elysia({ name: "authRoutes" })
 	)
 	.post(
 		"/auth/reset-password",
-		async ({ body, request, set }) => {
+		async ({ body, request }) => {
+			const accessToken =
+				body.accessToken ??
+				request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+
+			if (!accessToken) {
+				return new Response("Missing access token", { status: 401 });
+			}
+
 			const passwordRecommendations: string[] = [];
 			const complexity = checkPasswordComplexity(body.password);
 			if (!complexity.ok) {
@@ -59,23 +85,22 @@ export const authRouter = new Elysia({ name: "authRoutes" })
 				}
 			}
 
-			const { response, headers } = await authService.api.resetPassword({
-				body: {
-					token: body.token,
-					newPassword: body.password,
-				},
-				headers: request.headers,
-				returnHeaders: true,
-			});
+			const { data, error } = await supabaseAdmin.auth.getUser(accessToken);
+			if (error || !data.user) {
+				return new Response("Unauthorized", { status: 401 });
+			}
 
-			const responseHeaders: Record<string, string> = {};
-			headers.forEach((value, key) => {
-				responseHeaders[key] = value;
-			});
-			set.headers = responseHeaders;
+			const { error: updateError } =
+				await supabaseAdmin.auth.admin.updateUserById(data.user.id, {
+					password: body.password,
+				});
+
+			if (updateError) {
+				return new Response(updateError.message, { status: 400 });
+			}
 
 			return {
-				status: response.status,
+				status: 200,
 				passwordRecommendations,
 			};
 		},
@@ -89,56 +114,46 @@ export const authRouter = new Elysia({ name: "authRoutes" })
 	)
 	.post(
 		"/auth/login",
-		async ({ body, request, set }) => {
-			const { response: signInResult, headers } =
-				await authService.api.signInEmail({
-					body,
-					headers: request.headers,
-					returnHeaders: true,
-				});
-
-			if (
-				appConfig.emailVerificationEnforce &&
-				!signInResult.user.emailVerified
-			) {
-				return new Response("Email not verified", { status: 403 });
-			}
-
-			const refreshToken = await createRefreshToken(signInResult.user.id);
-
-			await prisma.user.update({
-				where: { id: signInResult.user.id },
-				data: {
-					lastLoginAt: new Date(),
-				},
+		async ({ body }) => {
+			const { data, error } = await supabaseAnon.auth.signInWithPassword({
+				email: body.email,
+				password: body.password,
 			});
 
-			// Generate JWT token using our custom signer (Better Auth JWT plugin doesn't return token in signInEmail response)
-			const accessToken = await signAccessToken(
-				signInResult.user.id,
-				signInResult.user.email,
+			if (error || !data.user) {
+				return new Response(error?.message ?? "Invalid credentials", {
+					status: 401,
+				});
+			}
+
+			const profile = await ensureProfile(
+				data.user.id,
+				data.user.user_metadata?.name ?? data.user.email ?? "User",
 			);
 
-			set.headers = Object.fromEntries(headers);
+			if (profile.banned) {
+				return new Response("User is banned", { status: 403 });
+			}
 
 			return {
-				accessToken,
-				refreshToken,
-				user: signInResult.user,
+				accessToken: data.session?.access_token ?? null,
+				refreshToken: data.session?.refresh_token ?? null,
+				user: data.user,
+				profile,
 			};
 		},
 		{
 			body: loginSchema,
 			detail: {
 				summary:
-					"Sign in with email/password (Better Auth) and issue refresh token",
+					"Sign in with email/password and return Supabase session tokens",
 				tags: ["auth"],
 			},
 		},
 	)
 	.post(
 		"/auth/signup",
-		async ({ body, request, set }) => {
+		async ({ body }) => {
 			const passwordRecommendations: string[] = [];
 			const complexity = checkPasswordComplexity(body.password);
 			if (!complexity.ok) {
@@ -156,103 +171,67 @@ export const authRouter = new Elysia({ name: "authRoutes" })
 				}
 			}
 
-			const { response, headers } = await authService.api.signUpEmail({
-				body,
-				headers: request.headers,
-				returnHeaders: true,
+			const { data, error } = await supabaseAnon.auth.signUp({
+				email: body.email,
+				password: body.password,
+				options: {
+					data: { name: body.name },
+					emailRedirectTo: appConfig.magicLinkRedirectUrl,
+				},
 			});
 
-			// Ensure role and set login timestamp (best-effort)
-			await prisma.user.updateMany({
-				where: { id: response.user.id },
-				data: { role: "user", lastLoginAt: new Date() },
-			});
+			if (error || !data.user) {
+				return new Response(error?.message ?? "Unable to sign up", {
+					status: 400,
+				});
+			}
 
-			set.headers = Object.fromEntries(headers);
-
-			const refreshToken = await createRefreshToken(response.user.id);
-
-			// Generate JWT token using our custom signer (Better Auth JWT plugin doesn't return token in signUpEmail response)
-			const accessToken = await signAccessToken(
-				response.user.id,
-				response.user.email,
-			);
+			const profile = await ensureProfile(data.user.id, body.name);
 
 			return {
-				...response,
-				accessToken,
-				refreshToken,
+				user: data.user,
+				session: data.session ?? null,
+				accessToken: data.session?.access_token ?? null,
+				refreshToken: data.session?.refresh_token ?? null,
+				profile,
 				passwordRecommendations,
-				message: appConfig.emailVerification
-					? "Verification email sent. Please verify before signing in."
-					: "Signup successful.",
+				message:
+					"Signup successful. Check your email to confirm before signing in.",
 			};
 		},
 		{
 			body: signupSchema,
 			detail: {
-				summary: "Sign up with email/password and set default user role",
+				summary: "Sign up with email/password and create a profile",
+				tags: ["auth"],
+			},
+		},
+	)
+	.post(
+		"/auth/magic-link",
+		async ({ body }) => {
+			const { error } = await supabaseAnon.auth.signInWithOtp({
+				email: body.email,
+				options: appConfig.magicLinkRedirectUrl
+					? { emailRedirectTo: appConfig.magicLinkRedirectUrl }
+					: undefined,
+			});
+
+			if (error) {
+				return new Response(error.message, { status: 400 });
+			}
+
+			return { sent: true };
+		},
+		{
+			body: magicLinkSchema,
+			detail: {
+				summary: "Send a magic link email",
 				tags: ["auth"],
 			},
 		},
 	)
 	.use(requireSession())
-	.post(
-		"/auth/refresh",
-		async (ctx) => {
-			const { body, session } = ctx as typeof ctx & {
-				body: { refreshToken: string };
-				session: AuthSession;
-			};
-			const rotated = await rotateRefreshToken(body.refreshToken);
-
-			if (!rotated) {
-				return new Response("Invalid refresh token", { status: 401 });
-			}
-
-			const user = await prisma.user.findUnique({
-				where: { id: rotated.record.userId },
-			});
-
-			if (!user) {
-				return new Response("User not found", { status: 404 });
-			}
-
-			const accessToken = await signAccessToken(user.id, user.email);
-
-			return {
-				accessToken,
-				refreshToken: rotated.newToken,
-				user: {
-					id: user.id,
-					email: user.email,
-					name: user.name,
-				},
-			};
-		},
-		{
-			body: refreshSchema,
-			detail: {
-				summary: "Exchange refresh token for new access/refresh pair",
-				tags: ["auth"],
-			},
-		},
-	)
-	.post(
-		"/auth/refresh/revoke",
-		async ({ body }) => {
-			const ok = await revokeRefreshToken(body.refreshToken);
-			if (!ok) return new Response("Invalid refresh token", { status: 404 });
-			return { success: true };
-		},
-		{
-			body: revokeRefreshSchema,
-			detail: {
-				summary: "Revoke a specific refresh token",
-				tags: ["auth"],
-			},
-		},
-	)
 	.get(
 		"/auth/me",
 		(ctx) => {
@@ -261,24 +240,7 @@ export const authRouter = new Elysia({ name: "authRoutes" })
 		},
 		{
 			detail: {
-				summary: "Inspect current Better Auth session",
-				tags: ["auth"],
-			},
-		},
-	)
-	.get(
-		"/auth/sessions",
-		async (ctx) => {
-			const { session, request } = ctx as typeof ctx & { session: AuthSession };
-			const sessions = await authService.api.listSessions({
-				headers: request.headers,
-			});
-
-			return { sessions, viewer: session.user };
-		},
-		{
-			detail: {
-				summary: "List active sessions for current user",
+				summary: "Inspect current Supabase session",
 				tags: ["auth"],
 			},
 		},
@@ -286,78 +248,25 @@ export const authRouter = new Elysia({ name: "authRoutes" })
 	.post(
 		"/auth/logout",
 		async (ctx) => {
-			const { session, request, set } = ctx as typeof ctx & {
+			const { session } = ctx as typeof ctx & {
 				session: AuthSession;
 			};
 
-			await revokeAllRefreshTokens(session.user.id);
-
-			const { headers } = await authService.api.signOut({
-				headers: request.headers,
-				returnHeaders: true,
-			});
-
-			set.headers = Object.fromEntries(headers);
+			const supabaseUser = createSupabaseUserClient(session.accessToken);
+			const { error } = await supabaseUser.auth.signOut();
+			if (error) {
+				return new Response(error.message, { status: 400 });
+			}
 
 			return { success: true };
 		},
 		{
 			detail: {
-				summary: "Sign out and revoke refresh tokens",
+				summary: "Sign out of Supabase session",
 				tags: ["auth"],
 			},
 		},
 	)
-	.post(
-		"/auth/logout-all",
-		async (ctx) => {
-			const { session, request, set } = ctx as typeof ctx & {
-				session: AuthSession;
-			};
-
-			await revokeAllRefreshTokens(session.user.id);
-
-			const { headers } = await authService.api.revokeSessions({
-				headers: request.headers,
-				returnHeaders: true,
-			});
-
-			set.headers = Object.fromEntries(headers);
-
-			return { success: true };
-		},
-		{
-			detail: {
-				summary: "Revoke all sessions and refresh tokens",
-				tags: ["auth"],
-			},
-		},
-	)
-	.post(
-		"/auth/session/revoke",
-		async (ctx) => {
-			const { request, set, session } = ctx as typeof ctx & {
-				session: AuthSession;
-			};
-
-			const { headers } = await authService.api.revokeSession({
-				headers: request.headers,
-				body: { token: session.session.token },
-				returnHeaders: true,
-			});
-
-			set.headers = Object.fromEntries(headers.entries());
-
-			return { success: true };
-		},
-		{
-			detail: {
-				summary: "Revoke current session",
-				tags: ["auth"],
-			},
-		},
-	)
-	.use(requireSession())
 	.onError(({ error }) => {
 		if (error instanceof Error) {
 			appLogger.error(error.message, "Auth");
