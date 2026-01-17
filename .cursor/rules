@@ -1,6 +1,7 @@
 # Project Rules
 - Always read llms/elysia-llms.txt for framework reference and conventions.
 - Also read llms/supabase-llms.txt for Supabase-specific details and conventions.
+- API responses must follow the shared response transformer in src/utils/response.ts.
 - Follow the Conventional Commits format when writing commit messages.
 
 Commit format:

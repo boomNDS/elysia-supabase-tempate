@@ -13,10 +13,10 @@ const DEFAULT_USER = {
 
 const seed = async () => {
 	const supabaseUrl = process.env.SUPABASE_URL;
-	const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+	const serviceRoleKey = process.env.SUPABASE_SECRET_KEY;
 
 	if (!supabaseUrl || !serviceRoleKey) {
-		console.warn("Skipping seed: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY missing.");
+		console.warn("Skipping seed: SUPABASE_URL or SUPABASE_SECRET_KEY missing.");
 		return;
 	}
 

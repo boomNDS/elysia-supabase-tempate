@@ -1,42 +1,79 @@
 import { Elysia } from "elysia";
-import { appConfig } from "../config";
-import { appLogger } from "../lib/logger";
-import { prisma } from "../lib/prisma";
 import {
 	forgotPasswordSchema,
 	loginSchema,
 	magicLinkSchema,
 	resetPasswordSchema,
 	signupSchema,
+	updateProfileSchema,
 } from "../schemas/auth";
+import { appConfig } from "../config";
+import { appLogger } from "../lib/logger";
 import {
 	createSupabaseUserClient,
 	supabaseAdmin,
-	supabaseAnon,
+	supabasePublic,
 } from "../lib/supabase";
 import { AuthSession, requireSession } from "../utils/auth";
 import {
 	checkPasswordComplexity,
 	checkPwnedPassword,
 } from "../utils/passwords";
+import { withStatus } from "../utils/response";
+import { ensureProfile, logSupabaseAuthResult } from "../services/auth-service";
+import { updateProfile } from "../services/profiles";
 
-const ensureProfile = async (userId: string, name: string | null | undefined) =>
-	prisma.profile.upsert({
-		where: { id: userId },
-		update: {
-			name: name ?? "User",
-		},
-		create: {
-			id: userId,
-			name: name ?? "User",
-		},
-	});
+const findExistingUserByEmail = async (email: string) => {
+	const admin = supabaseAdmin.auth.admin as {
+		getUserByEmail?: (value: string) => Promise<{
+			data: { user: { id: string } | null };
+			error: { message: string } | null;
+		}>;
+		listUsers?: (params?: {
+			page?: number;
+			perPage?: number;
+		}) => Promise<{
+			data: { users: Array<{ id: string; email?: string | null }> };
+			error: { message: string } | null;
+		}>;
+	};
+
+	if (typeof admin.getUserByEmail === "function") {
+		const result = await admin.getUserByEmail(email);
+		if (result.error) {
+			appLogger.warn(
+				`supabase lookup failed: ${result.error.message}`,
+				"Auth",
+			);
+		}
+		return result.data.user;
+	}
+
+	if (typeof admin.listUsers === "function") {
+		const result = await admin.listUsers({ page: 1, perPage: 200 });
+		if (result.error) {
+			appLogger.warn(
+				`supabase listUsers failed: ${result.error.message}`,
+				"Auth",
+			);
+			return null;
+		}
+		return (
+			result.data.users.find(
+				(user) => user.email?.toLowerCase() === email.toLowerCase(),
+			) ?? null
+		);
+	}
+
+	appLogger.warn("supabase admin user lookup unavailable; skipping precheck", "Auth");
+	return null;
+};
 
 export const authRouter = new Elysia({ name: "authRoutes" })
 	.post(
 		"/auth/forgot-password",
-		async ({ body }) => {
-			const { error } = await supabaseAnon.auth.resetPasswordForEmail(
+		async ({ body, set }) => {
+			const { error } = await supabasePublic.auth.resetPasswordForEmail(
 				body.email,
 				appConfig.passwordResetRedirectUrl
 					? { redirectTo: appConfig.passwordResetRedirectUrl }
@@ -44,7 +81,12 @@ export const authRouter = new Elysia({ name: "authRoutes" })
 			);
 
 			if (error) {
-				return new Response(error.message, { status: 400 });
+				return withStatus(
+					set,
+					400,
+					"failed to send reset email",
+					error.message,
+				);
 			}
 
 			return { sent: true };
@@ -59,13 +101,13 @@ export const authRouter = new Elysia({ name: "authRoutes" })
 	)
 	.post(
 		"/auth/reset-password",
-		async ({ body, request }) => {
+		async ({ body, request, set }) => {
 			const accessToken =
 				body.accessToken ??
 				request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
 
 			if (!accessToken) {
-				return new Response("Missing access token", { status: 401 });
+				return withStatus(set, 401, "missing access token");
 			}
 
 			const passwordRecommendations: string[] = [];
@@ -87,7 +129,7 @@ export const authRouter = new Elysia({ name: "authRoutes" })
 
 			const { data, error } = await supabaseAdmin.auth.getUser(accessToken);
 			if (error || !data.user) {
-				return new Response("Unauthorized", { status: 401 });
+				return withStatus(set, 401, "unauthorized");
 			}
 
 			const { error: updateError } =
@@ -96,13 +138,15 @@ export const authRouter = new Elysia({ name: "authRoutes" })
 				});
 
 			if (updateError) {
-				return new Response(updateError.message, { status: 400 });
+				return withStatus(
+					set,
+					400,
+					"failed to reset password",
+					updateError.message,
+				);
 			}
 
-			return {
-				status: 200,
-				passwordRecommendations,
-			};
+			return { passwordRecommendations };
 		},
 		{
 			body: resetPasswordSchema,
@@ -114,25 +158,37 @@ export const authRouter = new Elysia({ name: "authRoutes" })
 	)
 	.post(
 		"/auth/login",
-		async ({ body }) => {
-			const { data, error } = await supabaseAnon.auth.signInWithPassword({
+		async ({ body, set }) => {
+			const { data, error } = await supabasePublic.auth.signInWithPassword({
 				email: body.email,
 				password: body.password,
 			});
 
+			logSupabaseAuthResult("login", {
+				error: error ?? null,
+				userId: data.user?.id,
+			});
+
 			if (error || !data.user) {
-				return new Response(error?.message ?? "Invalid credentials", {
-					status: 401,
-				});
+				return withStatus(set, 401, "invalid credentials", error?.message);
 			}
 
-			const profile = await ensureProfile(
-				data.user.id,
-				data.user.user_metadata?.name ?? data.user.email ?? "User",
-			);
+			let profile;
+			try {
+				profile = await ensureProfile(
+					data.user.id,
+					data.user.user_metadata?.name ?? data.user.email ?? "User",
+				);
+			} catch (err) {
+				appLogger.error(
+					`profile upsert failed: ${err instanceof Error ? err.message : err}`,
+					"Auth",
+				);
+				return withStatus(set, 500, "failed to sync profile");
+			}
 
 			if (profile.banned) {
-				return new Response("User is banned", { status: 403 });
+				return withStatus(set, 403, "user is banned");
 			}
 
 			return {
@@ -153,7 +209,7 @@ export const authRouter = new Elysia({ name: "authRoutes" })
 	)
 	.post(
 		"/auth/signup",
-		async ({ body }) => {
+		async ({ body, set }) => {
 			const passwordRecommendations: string[] = [];
 			const complexity = checkPasswordComplexity(body.password);
 			if (!complexity.ok) {
@@ -171,7 +227,12 @@ export const authRouter = new Elysia({ name: "authRoutes" })
 				}
 			}
 
-			const { data, error } = await supabaseAnon.auth.signUp({
+			const existing = await findExistingUserByEmail(body.email);
+			if (existing) {
+				return withStatus(set, 409, "user already exists");
+			}
+
+			const { data, error } = await supabasePublic.auth.signUp({
 				email: body.email,
 				password: body.password,
 				options: {
@@ -180,13 +241,25 @@ export const authRouter = new Elysia({ name: "authRoutes" })
 				},
 			});
 
+			logSupabaseAuthResult("signup", {
+				error: error ?? null,
+				userId: data.user?.id,
+			});
+
 			if (error || !data.user) {
-				return new Response(error?.message ?? "Unable to sign up", {
-					status: 400,
-				});
+				return withStatus(set, 400, "unable to sign up", error?.message);
 			}
 
-			const profile = await ensureProfile(data.user.id, body.name);
+			let profile;
+			try {
+				profile = await ensureProfile(data.user.id, body.name);
+			} catch (err) {
+				appLogger.error(
+					`profile upsert failed: ${err instanceof Error ? err.message : err}`,
+					"Auth",
+				);
+				return withStatus(set, 500, "failed to sync profile");
+			}
 
 			return {
 				user: data.user,
@@ -195,8 +268,6 @@ export const authRouter = new Elysia({ name: "authRoutes" })
 				refreshToken: data.session?.refresh_token ?? null,
 				profile,
 				passwordRecommendations,
-				message:
-					"Signup successful. Check your email to confirm before signing in.",
 			};
 		},
 		{
@@ -209,8 +280,8 @@ export const authRouter = new Elysia({ name: "authRoutes" })
 	)
 	.post(
 		"/auth/magic-link",
-		async ({ body }) => {
-			const { error } = await supabaseAnon.auth.signInWithOtp({
+		async ({ body, set }) => {
+			const { error } = await supabasePublic.auth.signInWithOtp({
 				email: body.email,
 				options: appConfig.magicLinkRedirectUrl
 					? { emailRedirectTo: appConfig.magicLinkRedirectUrl }
@@ -218,7 +289,7 @@ export const authRouter = new Elysia({ name: "authRoutes" })
 			});
 
 			if (error) {
-				return new Response(error.message, { status: 400 });
+				return withStatus(set, 400, "failed to send magic link", error.message);
 			}
 
 			return { sent: true };
@@ -227,6 +298,50 @@ export const authRouter = new Elysia({ name: "authRoutes" })
 			body: magicLinkSchema,
 			detail: {
 				summary: "Send a magic link email",
+				tags: ["auth"],
+			},
+		},
+	)
+	.patch(
+		"/auth/profile",
+		async (ctx) => {
+			const { session, body } = ctx as typeof ctx & {
+				session: AuthSession;
+				body: { name?: string; avatarUrl?: string };
+			};
+
+			if (body.name || body.avatarUrl) {
+				const userMetadata: Record<string, string> = {};
+				if (body.name) userMetadata.name = body.name;
+				if (body.avatarUrl) userMetadata.avatar_url = body.avatarUrl;
+
+				const { error } = await supabaseAdmin.auth.admin.updateUserById(
+					session.user.id,
+					{
+						user_metadata: userMetadata,
+					},
+				);
+				if (error) {
+					return withStatus(
+						ctx.set,
+						400,
+						"failed to update auth metadata",
+						error.message,
+					);
+				}
+			}
+
+			const updated = await updateProfile(session.user.id, {
+				name: body.name,
+				avatarUrl: body.avatarUrl,
+			});
+
+			return { profile: updated };
+		},
+		{
+			body: updateProfileSchema,
+			detail: {
+				summary: "Update the current user's profile",
 				tags: ["auth"],
 			},
 		},
@@ -248,14 +363,17 @@ export const authRouter = new Elysia({ name: "authRoutes" })
 	.post(
 		"/auth/logout",
 		async (ctx) => {
-			const { session } = ctx as typeof ctx & {
-				session: AuthSession;
-			};
+			const { session } = ctx as typeof ctx & { session: AuthSession };
 
 			const supabaseUser = createSupabaseUserClient(session.accessToken);
 			const { error } = await supabaseUser.auth.signOut();
 			if (error) {
-				return new Response(error.message, { status: 400 });
+				return withStatus(
+					ctx.set,
+					400,
+					"failed to sign out",
+					error.message,
+				);
 			}
 
 			return { success: true };
@@ -268,7 +386,8 @@ export const authRouter = new Elysia({ name: "authRoutes" })
 		},
 	)
 	.onError(({ error }) => {
+		// Errors are normalized by the global error handler.
 		if (error instanceof Error) {
-			appLogger.error(error.message, "Auth");
+			console.error(error.message);
 		}
 	});

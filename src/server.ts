@@ -17,8 +17,8 @@ export const startServer = (p = port) => {
 			`Elysia listening on http://${hostname}:${boundPort} (pid ${process.pid})`,
 			"Server",
 		);
-		appLogger.log(
-			`Docs: http://${hostname}:${boundPort}/docs | Auth: http://${hostname}:${boundPort}${appConfig.authBasePath}`,
+	appLogger.log(
+			`Docs: http://${hostname}:${boundPort}/docs | Auth: http://${hostname}:${boundPort}/auth`,
 			"Server",
 		);
 	});

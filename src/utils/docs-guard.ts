@@ -2,9 +2,11 @@ import { Elysia } from "elysia";
 
 import { appConfig } from "../config";
 import { appLogger } from "../lib/logger";
-import { prisma } from "../lib/prisma";
 import { supabaseAdmin } from "../lib/supabase";
 import { getAccessToken } from "./auth";
+import { jsonError } from "./response";
+import { ensureProfile } from "../services/auth-service";
+import { getProfileById } from "../services/profiles";
 
 export const docsGuard = () => {
 	if (appConfig.nodeEnv !== "production") return new Elysia();
@@ -16,14 +18,27 @@ export const docsGuard = () => {
 		if (!request.url.includes("/docs")) return {};
 
 		const accessToken = getAccessToken(request);
-		if (!accessToken) throw new Response("Unauthorized", { status: 401 });
+		if (!accessToken) throw jsonError(401, "unauthorized");
 
 		const { data, error } = await supabaseAdmin.auth.getUser(accessToken);
-		if (error || !data.user) throw new Response("Unauthorized", { status: 401 });
+		if (error || !data.user) throw jsonError(401, "unauthorized");
 
-		const profile = await prisma.profile.findUnique({
-			where: { id: data.user.id },
-		});
+		let profile;
+		try {
+			profile = await getProfileById(data.user.id);
+			if (!profile) {
+				profile = await ensureProfile(
+					data.user.id,
+					data.user.user_metadata?.name ?? data.user.email ?? "User",
+				);
+			}
+		} catch (err) {
+			throw jsonError(
+				500,
+				"failed to load profile",
+				err instanceof Error ? err.message : String(err),
+			);
+		}
 
 		const hasRole = profile?.role === adminRole;
 		const isAllowlisted =
@@ -36,7 +51,7 @@ export const docsGuard = () => {
 				`Docs access denied for ${data.user.email ?? "unknown"}`,
 				"DocsGuard",
 			);
-			throw new Response("Forbidden", { status: 403 });
+			throw jsonError(403, "forbidden");
 		}
 
 		return { session: { user: data.user, profile, accessToken } };

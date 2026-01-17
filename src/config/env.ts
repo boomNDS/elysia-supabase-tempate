@@ -25,10 +25,10 @@ const envSchema = z
 		SIGNUP_RATE_LIMIT_MAX: z.string().optional(),
 		FRONTEND_URL: z.string().optional(),
 		SUPABASE_URL: z.string().min(1, "SUPABASE_URL is required"),
-		SUPABASE_ANON_KEY: z.string().min(1, "SUPABASE_ANON_KEY is required"),
-		SUPABASE_SERVICE_ROLE_KEY: z
+		SUPABASE_PUBLISHABLE_KEY: z
 			.string()
-			.min(1, "SUPABASE_SERVICE_ROLE_KEY is required"),
+			.min(1, "SUPABASE_PUBLISHABLE_KEY is required"),
+		SUPABASE_SECRET_KEY: z.string().min(1, "SUPABASE_SECRET_KEY is required"),
 		SUPABASE_MAGIC_LINK_REDIRECT_URL: z.string().optional(),
 		SUPABASE_PASSWORD_RESET_REDIRECT_URL: z.string().optional(),
 		DATABASE_URL: z.string(),

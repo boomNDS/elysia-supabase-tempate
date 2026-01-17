@@ -24,3 +24,8 @@ export const resetPasswordSchema = t.Object({
 	accessToken: t.String({ minLength: 10 }),
 	password: t.String({ minLength: appConfig.signupMinPasswordLength }),
 });
+
+export const updateProfileSchema = t.Object({
+	name: t.Optional(t.String({ minLength: 1 })),
+	avatarUrl: t.Optional(t.String({ minLength: 1 })),
+});

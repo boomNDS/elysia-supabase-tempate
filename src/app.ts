@@ -13,6 +13,7 @@ import { systemRouter } from "./routes/system.routes";
 import { runCleanup } from "./services/cleanup";
 import { pingSupabase } from "./services/keepalive";
 import { docsGuard } from "./utils/docs-guard";
+import { responseTransformer } from "./utils/response";
 import { securityHeaders } from "./utils/security";
 
 const {
@@ -66,6 +67,19 @@ export const createApp = () => {
 		)
 		.use(docsGuard())
 		.use(securityHeaders())
+		.use(responseTransformer())
+		.onError(({ error, set }) => {
+			if (set.status < 400) {
+				set.status = 500;
+			}
+			const message =
+				error instanceof Error ? error.message : "unexpected error";
+			return {
+				status: set.status,
+				message: "error",
+				error: message,
+			};
+		})
 		.use(
 			cron({
 				name: "cleanup",

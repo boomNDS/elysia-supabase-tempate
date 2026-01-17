@@ -30,8 +30,8 @@ export const appConfig = {
 	signupRateLimitMax: num(env.SIGNUP_RATE_LIMIT_MAX, 5),
 	frontendUrl: env.FRONTEND_URL,
 	supabaseUrl: env.SUPABASE_URL,
-	supabaseAnonKey: env.SUPABASE_ANON_KEY,
-	supabaseServiceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY,
+	supabasePublishableKey: env.SUPABASE_PUBLISHABLE_KEY,
+	supabaseSecretKey: env.SUPABASE_SECRET_KEY,
 	magicLinkRedirectUrl:
 		env.SUPABASE_MAGIC_LINK_REDIRECT_URL ??
 		(env.FRONTEND_URL

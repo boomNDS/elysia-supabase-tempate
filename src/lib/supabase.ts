@@ -9,14 +9,14 @@ const createSupabaseClient = (key: string) =>
 		},
 	});
 
-export const supabaseAnon = createSupabaseClient(appConfig.supabaseAnonKey);
-
-export const supabaseAdmin = createSupabaseClient(
-	appConfig.supabaseServiceRoleKey,
+export const supabasePublic = createSupabaseClient(
+	appConfig.supabasePublishableKey,
 );
 
+export const supabaseAdmin = createSupabaseClient(appConfig.supabaseSecretKey);
+
 export const createSupabaseUserClient = (accessToken: string) =>
-	createClient(appConfig.supabaseUrl, appConfig.supabaseAnonKey, {
+	createClient(appConfig.supabaseUrl, appConfig.supabasePublishableKey, {
 		auth: {
 			persistSession: false,
 			autoRefreshToken: false,

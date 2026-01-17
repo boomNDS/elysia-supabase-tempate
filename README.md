@@ -45,7 +45,7 @@ flowchart LR
 ## Setup
 1. Install Bun 1.3.5+ (recommended via `asdf` with `.tool-versions`), then dependencies: `bun install`
 2. Copy `.env.example` to `.env` and set:
-   - Required: `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `CORS_ORIGINS` (explicit origins in prod, not `*`).
+   - Required: `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, `CORS_ORIGINS` (explicit origins in prod, not `*`).
    - Auth/Admin: `ADMIN_ROLE`, `ADMIN_EMAILS`, `FRONTEND_URL`, `SUPABASE_MAGIC_LINK_REDIRECT_URL`, `SUPABASE_PASSWORD_RESET_REDIRECT_URL`, `SIGNUP_MIN_PASSWORD_LENGTH`, `SIGNUP_PWNED_CHECKS`, `SIGNUP_RATE_LIMIT_WINDOW_MS`, `SIGNUP_RATE_LIMIT_MAX`.
    - Email: `RESEND_API_KEY`, `EMAIL_FROM` if using emails.
 3. Start Postgres: `docker compose up -d db`
@@ -56,6 +56,7 @@ flowchart LR
 
 ## Supabase Setup Guide
 1. Create a new Supabase project and copy the project URL and API keys.
+   - Use the new keys: `SUPABASE_PUBLISHABLE_KEY` (client) and `SUPABASE_SECRET_KEY` (server).
 2. In Supabase SQL Editor, create the `public.profiles` table if you did not run Prisma migrations against the Supabase database.
 3. Enable RLS and apply the minimal policies below:
 
@@ -107,12 +108,34 @@ using (
       and p.role = 'admin'
   )
 );
+
+-- Admins can update roles (optional; when using client-side admin tooling)
+create policy "profiles_admin_update_role"
+on public.profiles
+for update
+using (
+  exists (
+    select 1
+    from public.profiles p
+    where p.id = auth.uid()
+      and p.role = 'admin'
+  )
+);
 ```
 
-4. Set `.env` values: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, and optional redirect URLs.
+4. Set `.env` values: `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, and optional redirect URLs.
+   - Use `SUPABASE_PUBLISHABLE_KEY` on the frontend.
+   - Keep `SUPABASE_SECRET_KEY` server-only.
+   - Ensure the `profiles.updated_at` column has a default (e.g. `now()`) or your profile upserts will fail.
 5. Configure Supabase Auth Redirect URLs to include:
    - Magic link: `${FRONTEND_URL}/auth`
    - Password reset: `${FRONTEND_URL}/auth/forget`
+
+### Migration Note (Legacy Keys)
+- Supabase replaced `anon` and `service_role` keys with `publishable` and `secret`.
+- If your existing setup uses `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY`, replace them with:
+  - `SUPABASE_PUBLISHABLE_KEY` (client/frontend)
+  - `SUPABASE_SECRET_KEY` (server-only)
 
 ## Magic Link Flow (Frontend)
 This backend exposes `POST /auth/magic-link` which sends the Supabase magic link email.
@@ -131,7 +154,7 @@ await fetch("http://localhost:3000/auth/magic-link", {
 ```ts
 import { createClient } from "@supabase/supabase-js";
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const { data, error } = await supabase.auth.exchangeCodeForSession(
   window.location.href,
 );
@@ -173,7 +196,7 @@ await fetch(`${API_URL}/auth/magic-link`, {
 ```ts
 import { createClient } from "@supabase/supabase-js";
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const { data, error } = await supabase.auth.exchangeCodeForSession(
   window.location.href,
 );
@@ -216,8 +239,8 @@ await fetch(`${API_URL}/auth/logout`, {
 ```
 
 ## Key Endpoints (prefix `/`)
-- Auth: `/auth/signup`, `/auth/login`, `/auth/magic-link`, `/auth/forgot-password`, `/auth/reset-password`, `/auth/logout`, `/auth/me`
-- Admin: `/admin/users` (admin-only)
+- Auth: `/auth/signup`, `/auth/login`, `/auth/magic-link`, `/auth/forgot-password`, `/auth/reset-password`, `/auth/logout`, `/auth/me`, `/auth/profile`
+- Admin: `/admin/users`, `/admin/users/:id/role` (admin-only)
 - Email: `/email/send`
 - System: `/health`
 - Docs: `/docs`
@@ -225,7 +248,7 @@ await fetch(`${API_URL}/auth/logout`, {
 ## Notes
 - Profiles live in `public.profiles`, aligned to Supabase `auth.users`. Auth is managed by Supabase; Prisma does not create auth users.
 - Roles: Prisma `Profile.role` (default `user`); seed creates admin profile. Admin checks use `ADMIN_ROLE` and optional allowlist (`ADMIN_EMAILS`).
-- Seed uses Supabase Admin API, so `SUPABASE_SERVICE_ROLE_KEY` must be set.
+- Seed uses Supabase Admin API, so `SUPABASE_SECRET_KEY` must be set.
 
 ## Contributing
 - Open to contributions and suggestions. Feel free to open issues or PRs.
