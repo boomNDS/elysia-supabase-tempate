@@ -38,8 +38,12 @@ export const jsonError = (status: number, message: string, error?: string) =>
 		headers: { "content-type": "application/json" },
 	});
 
+type SetStatus = {
+	status?: number | string;
+};
+
 export const withStatus = (
-	set: { status?: number },
+	set: SetStatus,
 	status: number,
 	message: string,
 	error?: string,

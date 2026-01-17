@@ -24,12 +24,41 @@ const seed = async () => {
 		auth: { persistSession: false, autoRefreshToken: false },
 	});
 
-	const existing = await supabase.auth.admin.getUserByEmail(DEFAULT_USER.email);
-	if (existing.error) {
-		throw new Error(existing.error.message);
-	}
+	const findUserByEmail = async (email: string) => {
+		const normalizedEmail = email.toLowerCase();
+		let page = 1;
+
+		while (true) {
+			const result = await supabase.auth.admin.listUsers({
+				page,
+				perPage: 100,
+			});
+
+			if (result.error) {
+				throw new Error(result.error.message);
+			}
+
+			const match = result.data.users.find(
+				(user) => user.email?.toLowerCase() === normalizedEmail,
+			);
+
+			if (match) {
+				return match;
+			}
+
+			if (result.data.nextPage == null) {
+				break;
+			}
+
+			page = result.data.nextPage;
+		}
+
+		return null;
+	};
+
+	const existingUser = await findUserByEmail(DEFAULT_USER.email);
 	const userId =
-		existing.data.user?.id ??
+		existingUser?.id ??
 		(
 			await supabase.auth.admin.createUser({
 				email: DEFAULT_USER.email,

@@ -69,13 +69,15 @@ export const createApp = () => {
 		.use(securityHeaders())
 		.use(responseTransformer())
 		.onError(({ error, set }) => {
-			if (set.status < 400) {
-				set.status = 500;
-			}
+			const currentStatus =
+				typeof set.status === "number" ? set.status : 500;
+			const normalizedStatus = currentStatus < 400 ? 500 : currentStatus;
+			set.status = normalizedStatus;
+
 			const message =
 				error instanceof Error ? error.message : "unexpected error";
 			return {
-				status: set.status,
+				status: normalizedStatus,
 				message: "error",
 				error: message,
 			};
